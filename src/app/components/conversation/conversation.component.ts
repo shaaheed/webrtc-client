@@ -1,6 +1,7 @@
 import { ApplicationRef, Component, Input, ViewChild } from '@angular/core';
 import { Socket } from 'ngx-socket-io';
 import { HttpService } from 'src/app/services/http.service';
+import { StunServers } from 'src/app/stun.servers';
 
 @Component({
   selector: 'app-conversation',
@@ -89,7 +90,7 @@ export class ConversationComponent {
     // });
 
     this.socket.on('oncall', (e: any) => {
-      this.toRtcConnection = new RTCPeerConnection();
+      this.toRtcConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
 
       this.isCallee = true;
       this.isCaller = false;
@@ -210,7 +211,7 @@ export class ConversationComponent {
     //   this.httpService.post('icecandidate', { for: 'to', candidate: e.candidate }).subscribe(x => { });
     // }
 
-    this.fromRtcConnection = new RTCPeerConnection();
+    this.fromRtcConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
 
     this.fromRtcConnection.ontrack = (e) => {
       console.log('from: on track');
