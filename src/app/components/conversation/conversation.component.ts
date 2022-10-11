@@ -1,4 +1,4 @@
-import { ApplicationRef, Component, Input, ViewChild } from '@angular/core';
+import { ApplicationRef, Component, ElementRef, Input, ViewChild } from '@angular/core';
 import { Socket } from 'ngx-socket-io';
 import { HttpService } from 'src/app/services/http.service';
 import { StunServers } from 'src/app/stun.servers';
@@ -17,8 +17,8 @@ export class ConversationComponent {
   ) { }
 
   @Input() users: any[] = [];
-  @ViewChild('fromVideoElement', { static: true }) fromVideoElement?: any;
-  @ViewChild('toVideoElement', { static: true }) toVideoElement?: any;
+  @ViewChild('localVideoElementRef', { static: true }) localVideoElementRef?: ElementRef;
+  @ViewChild('remoteVideoElementRef', { static: true }) remoteVideoElementRef?: ElementRef;
 
   socketId: any;
   toUsername: any;
@@ -36,12 +36,14 @@ export class ConversationComponent {
   callerOrCalleeMuted: any;
   callDuration = "00:00:00";
 
-  private fromRtcConnection?: RTCPeerConnection;
-  private fromChannel?: RTCDataChannel;
-  private toRtcConnection?: RTCPeerConnection;
-  private toChannel?: RTCDataChannel;
-  private callInitTime: any;
-  private tracks: MediaStreamTrack[] = [];
+  private localVideoElement?: HTMLVideoElement;
+  private remoteVideoElement?: HTMLVideoElement;
+
+  private localStream?: MediaStream;
+  private remoteStream?: MediaStream;
+
+  private peerConnection?: RTCPeerConnection;
+  private callStartTime: any;
   private interval: any;
 
   ngOnInit() {
@@ -80,17 +82,13 @@ export class ConversationComponent {
 
     });
 
-    // this.socket.on('onicecandidate', (e: any) => {
-    //   if (e.for == 'from' && this.fromRtcConnection) {
-    //     this.fromRtcConnection.addIceCandidate(e.candidate);
-    //   }
-    //   else if (e.for == "to" && this.toRtcConnection) {
-    //     this.toRtcConnection.addIceCandidate(e.candidate);
-    //   }
-    // });
+    this.socket.on('onicecandidate', (e: any) => {
+      console.log('onicecandidate for: ', e.to);
+      this.peerConnection?.addIceCandidate(e.candidate);
+    });
 
     this.socket.on('oncall', (e: any) => {
-      this.toRtcConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
+      this.peerConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
 
       this.isCallee = true;
       this.isCaller = false;
@@ -102,48 +100,55 @@ export class ConversationComponent {
 
       console.log(`to: got a call from ${this.fromUsername}`);
 
-      // this.toRtcConnection.onicecandidate = (e) => {
-      //   console.log('toRtcConnection.onicecandidate');
-      //   this.httpService.post('icecandidate', { for: 'from', candidate: e.candidate }).subscribe(x => { });
-      // }
-
-      this.toRtcConnection.ontrack = (e) => {
-        console.log('to: on track');
-        if (this.toVideoElement) {
-          const [stream] = e.streams;
-          this.toVideoElement.nativeElement.srcObject = stream;
-          this.setCallerOrCalleeMuted(stream.getTracks());
-        }
-        this.startCallTimer();
+      this.peerConnection.onicecandidate = (e) => {
+        console.log('to: onicecandidate');
+        this.httpService.post('icecandidate', { to: this.currentUserToChat?.id, candidate: e.candidate }).subscribe(x => { });
       }
 
-      this.toRtcConnection.ondatachannel = (e) => {
-        this.toChannel = e.channel;
+      this.peerConnection.ontrack = (e) => {
+        console.log('to: on track');
+        if (this.remoteVideoElement) {
+          const [stream] = e.streams;
+          this.remoteStream = stream;
+          this.remoteVideoElement.srcObject = stream;
+          this.setCallerOrCalleeMuted(stream.getTracks());
+          this.startCallTimer();
+        }
+      }
+
+      this.peerConnection.ondatachannel = (e) => {
+        const channel = e.channel;
         console.log('to: ondatachannel');
-        this.toChannel.onmessage = (e) => {
+        channel.onmessage = (e) => {
           console.log(`to: ${this.toUsername} got a message: ${e.data} from ${this.fromUsername}`);
         };
-        this.toChannel.onopen = (e) => {
+        channel.onopen = (e) => {
           console.log('to: webtrc connection oppened');
         }
-        this.toChannel.onclose = (e) => {
+        channel.onclose = (e) => {
           console.log('to: onclose');
           this.handleOnCallEnded();
         }
       }
 
       navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-        .then(stream => this.setVideo(stream, this.fromVideoElement, this.toRtcConnection))
-        .then(() => this.toRtcConnection?.setRemoteDescription(e.offer))
+        .then(stream => {
+          this.localStream = stream;
+          this.setVideo(stream, this.localVideoElement, this.peerConnection);
+          if (this.localVideoElement) {
+            this.localVideoElement.muted = true;
+          }
+        })
+        .then(() => this.peerConnection?.setRemoteDescription(e.offer))
         .then(() => console.log('to: webtrc offer setted'))
-        .then(() => this.toRtcConnection?.createAnswer())
-        .then(answer => this.toRtcConnection?.setLocalDescription(answer))
+        .then(() => this.peerConnection?.createAnswer())
+        .then(answer => this.peerConnection?.setLocalDescription(answer))
         .then(() => {
           console.log('to: webrtc answer created');
-          console.log(`from: receiving a call from ${this.fromUsername}`);
+          console.log(`to: receiving a call from ${this.fromUsername}`);
           setTimeout(() => {
             this.httpService.post('receive', {
-              answer: this.toRtcConnection?.localDescription,
+              answer: this.peerConnection?.localDescription,
               from: e.to,
               to: e.from,
             }).subscribe(a => { });
@@ -153,11 +158,17 @@ export class ConversationComponent {
     });
 
     this.socket.on('onreceive', (e: any) => {
-      console.log('onreceive -----', e);
-      this.fromRtcConnection?.setRemoteDescription(e.answer)
-        .then(() => console.log('set remote description'));
+      if (this.peerConnection && !this.peerConnection.currentRemoteDescription) {
+        this.peerConnection?.setRemoteDescription(e.answer)
+          .then(() => console.log('set remote description'));
+      }
     });
 
+  }
+
+  ngAfterViewInit() {
+    this.localVideoElement = this.localVideoElementRef?.nativeElement;
+    this.remoteVideoElement = this.remoteVideoElementRef?.nativeElement;
   }
 
   setCurrentUserToChat(user: any) {
@@ -206,52 +217,54 @@ export class ConversationComponent {
 
     this.callerOrCalleeName = this.currentUserToChat?.username;
 
-    // this.fromRtcConnection.onicecandidate = (e) => {
-    //   console.log('fromRtcConnection.onicecandidate');
-    //   this.httpService.post('icecandidate', { for: 'to', candidate: e.candidate }).subscribe(x => { });
-    // }
+    this.peerConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
 
-    this.fromRtcConnection = new RTCPeerConnection({ iceServers: StunServers.getServers() });
-
-    this.fromRtcConnection.ontrack = (e) => {
-      console.log('from: on track');
-      if (this.toVideoElement) {
-        const [stream] = e.streams;
-        this.toVideoElement.nativeElement.srcObject = stream;
-        this.setCallerOrCalleeMuted(stream.getTracks());
-      }
-
-      this.startCallTimer();
+    this.peerConnection.onicecandidate = (e) => {
+      console.log('from: onicecandidate');
+      this.httpService.post('icecandidate', { to: this.currentUserToChat?.id, candidate: e.candidate }).subscribe(x => { });
     }
 
-    // this.fromRtcConnection.onnegotiationneeded = (e) => {
-    //   console.log('fromRtcConnection.onnegotiationneeded', e);
-    // }
+    this.peerConnection.ontrack = (e) => {
+      console.log('from: on track');
+      if (this.remoteVideoElement) {
+        const [stream] = e.streams;
+        this.remoteStream = stream;
+        this.remoteVideoElement.srcObject = stream;
+        this.setCallerOrCalleeMuted(stream.getTracks());
+        this.startCallTimer();
+      }
+    }
 
-    this.fromChannel = this.fromRtcConnection.createDataChannel("channel")
-    this.fromChannel.onmessage = (e) => {
+    const channel = this.peerConnection.createDataChannel("channel");
+    channel.onmessage = (e) => {
       console.log(`from: ${this.fromUsername} got a message: ${e.data} from ${this.toUsername}`);
     }
 
-    this.fromChannel.onopen = (e) => {
+    channel.onopen = (e) => {
       console.log('from: webrtc connection oppend');
     }
 
-    this.fromChannel.onclose = (e) => {
+    channel.onclose = (e) => {
       console.log('from: onclose');
       this.handleOnCallEnded();
     }
 
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-      .then(stream => this.setVideo(stream, this.fromVideoElement, this.fromRtcConnection))
-      .then(() => this.fromRtcConnection?.createOffer())
-      .then(offer => this.fromRtcConnection?.setLocalDescription(offer))
+      .then(stream => {
+        this.localStream = stream;
+        this.setVideo(stream, this.localVideoElement, this.peerConnection);
+        if (this.localVideoElement) {
+          this.localVideoElement.muted = true;
+        }
+      })
+      .then(() => this.peerConnection?.createOffer())
+      .then(offer => this.peerConnection?.setLocalDescription(offer))
       .then(() => {
         setTimeout(() => {
           console.log(`from: webrtc offer created`);
           console.log(`from: initiating a call to ${this.toUsername}`);
           this.httpService.post('call', {
-            offer: this.fromRtcConnection?.localDescription,
+            offer: this.peerConnection?.localDescription,
             to: this.currentUserToChat.id,
             from: this.socketId,
           }).subscribe(y => { });
@@ -259,14 +272,13 @@ export class ConversationComponent {
       });
   }
 
-  setVideo(stream: any, element: any, rtcConnection: any) {
+  setVideo(stream?: MediaStream, element?: HTMLVideoElement, rtcConnection?: RTCPeerConnection) {
     if (stream) {
       if (element) {
-        element.nativeElement.srcObject = stream;
+        element.srcObject = stream;
       }
       if (rtcConnection) {
         stream.getTracks().forEach((track: MediaStreamTrack) => {
-          this.tracks.push(track);
           rtcConnection.addTrack(track, stream);
         });
       }
@@ -275,26 +287,35 @@ export class ConversationComponent {
 
   handleMute() {
     this.mute = !this.mute;
-    this.enableAudioTrack(this.tracks, this.mute);
+    this.enableAudioTrack(this.localStream?.getTracks() ?? [], this.mute);
   }
 
   handleVideoMute() {
     this.videoOn = !this.videoOn;
-    this.enableVideoTrack(this.tracks, this.videoOn);
+    this.enableVideoTrack(this.localStream?.getTracks() ?? [], this.videoOn);
   }
 
   handleCallEnd() {
-    this.fromRtcConnection?.close();
-    this.toRtcConnection?.close();
+    this.peerConnection?.close();
+  }
+
+  handleFullScreen() {
+    if (this.remoteVideoElement?.requestFullscreen) {
+      this.remoteVideoElement?.requestFullscreen();
+    } else if ((this.remoteVideoElement as any)?.webkitRequestFullscreen) { /* Safari */
+      (this.remoteVideoElement as any).webkitRequestFullscreen();
+    } else if ((this.remoteVideoElement as any)?.msRequestFullscreen) { /* IE11 */
+      (this.remoteVideoElement as any).msRequestFullscreen();
+    }
   }
 
   startCallTimer() {
     if (this.interval) {
       clearInterval(this.interval);
     }
-    this.callInitTime = Date.now();
+    this.callStartTime = Date.now();
     this.interval = setInterval(() => {
-      const diff = Date.now() - this.callInitTime;
+      const diff = Date.now() - this.callStartTime;
       let t = diff;
       const h = Math.floor(t / 1000 / 60 / 60);
       t -= h * 1000 * 60 * 60;
@@ -310,12 +331,15 @@ export class ConversationComponent {
     this.inACall = false;
     this.isCaller = false;
     this.isCallee = false;
-    this.tracks?.forEach((x: MediaStreamTrack) => x.stop());
-    this.tracks = [];
+    this.localStream?.getTracks()?.forEach((x: MediaStreamTrack) => x.stop());
+    this.remoteStream?.getTracks()?.forEach((x: MediaStreamTrack) => x.stop());
     if (this.interval) {
       clearInterval(this.interval);
     }
     this.interval = null;
+    this.localStream = undefined;
+    this.remoteStream = undefined;
+    this.peerConnection = undefined;
   }
 
   setCallerOrCalleeMuted(tracks: MediaStreamTrack[]) {

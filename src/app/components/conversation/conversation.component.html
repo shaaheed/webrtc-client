@@ -41,11 +41,11 @@
     </div>
     <div class="from-video">
       <div class="from-video-box">
-        <video #fromVideoElement autoplay="true" id="fromVideo"></video>
+        <video #localVideoElementRef autoplay="true" [muted]="true" oncanplay="this.muted=true"></video>
       </div>
     </div>
     <div class="to-video">
-      <video #toVideoElement autoplay="true" id="toVideo"></video>
+      <video #remoteVideoElementRef autoplay="true"></video>
       <div class="d-flex video-controls-area">
         <!-- <div class="video-controls">
           <div>
@@ -56,7 +56,7 @@
           </button>
         </div> -->
         <div class="video-controls">
-          <button type="button" class="btn nav-btn ctrl-btn">
+          <button (click)="handleFullScreen()" type="button" class="btn nav-btn ctrl-btn">
             <i class="ri-fullscreen-line"></i>
           </button>
           <button (click)="handleMute()" type="button" class="btn nav-btn ctrl-btn">

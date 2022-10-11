@@ -4,7 +4,8 @@
 
 export const environment = {
   production: false,
-  baseUrl: 'https://polar-refuge-25460.herokuapp.com' //'http://localhost:3000'
+  baseUrl: 'https://polar-refuge-25460.herokuapp.com',
+  // baseUrl: 'http://localhost:3000'
 };
 
 /*
